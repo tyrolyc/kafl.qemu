@@ -42,6 +42,11 @@ static uint64_t get_48_paging_phys_addr(uint64_t cr3,
                                         uint64_t addr,
                                         bool     read_from_snapshot);
 
+static uint64_t get_32_paging_phys_addr(uint64_t cr3,
+                                        uint64_t addr,
+                                        bool     read_from_snapshot,
+                                        CPUState *cpu);
+
 #define x86_64_PAGE_SIZE 0x1000
 #define x86_64_PAGE_MASK ~(x86_64_PAGE_SIZE - 1)
 
@@ -89,7 +94,7 @@ uint64_t get_paging_phys_addr(CPUState *cpu, uint64_t cr3, uint64_t addr)
     case mm_32_protected:
         return addr & 0xFFFFFFFFULL;
     case mm_32_paging:
-        nyx_abort("mem_mode: mm_32_paging not implemented!\n");
+        return get_32_paging_phys_addr(cr3, addr, false, cpu);
     case mm_32_pae:
         nyx_abort("mem_mode: mm_32_pae not implemented!\n");
     case mm_64_l4_paging:
@@ -113,7 +118,7 @@ static uint64_t get_paging_phys_addr_snapshot(CPUState *cpu, uint64_t cr3, uint6
     case mm_32_protected:
         return addr & 0xFFFFFFFFULL;
     case mm_32_paging:
-        nyx_abort("mem_mode: mm_32_paging not implemented!\n");
+        return get_32_paging_phys_addr(cr3, addr, true, cpu);
     case mm_32_pae:
         nyx_abort("mem_mode: mm_32_pae not implemented!\n");
     case mm_64_l4_paging:
@@ -669,6 +674,27 @@ static uint64_t load_entry(uint64_t address, uint64_t index, bool read_from_snap
     return entry;
 }
 
+// Helper function to load a single 32 bit pagetable entry. We simplify things by
+// returning the same invalid value (0) for both non-present entries and
+// any other error conditions, since we don't need to handle these cases
+// differently.
+static uint32_t load_entry_32(uint32_t address, uint32_t index, bool read_from_snapshot)
+{
+    uint32_t entry = 0;
+    if (unlikely(!read_memory(address + (index * sizeof(entry)), &entry,
+                              sizeof(entry), read_from_snapshot)))
+    {
+        return 0;
+    }
+
+    // Check that the entry is present.
+    if (unlikely(!bit(entry, 0))) {
+        return 0;
+    }
+
+    return entry;
+}
+
 static void print_page(
     uint64_t address, uint64_t entry, size_t size, bool s, bool w, bool x)
 {
@@ -862,6 +888,45 @@ static uint64_t get_48_paging_phys_addr(uint64_t cr3,
     uint64_t page_offset  = bits(addr, 0, 11);
     return page_address + page_offset;
 }
+
+
+
+static uint64_t get_32_paging_phys_addr(uint64_t cr3,
+                                        uint64_t addr,
+                                        bool     read_from_snapshot,
+                                        CPUState *cpu)
+{
+    uint64_t pde_address = cr3 & 0xFFFFF000;
+    uint64_t pde_offset  = bits(addr, 22, 31);
+    uint32_t pde_entry   = load_entry_32(pde_address, pde_offset, read_from_snapshot);
+    if (unlikely(!pde_entry)) {
+        return INVALID_ADDRESS;
+    }
+
+    CPUX86State *env = &(X86_CPU(cpu))->env;
+    uint64_t     cr4 = env->cr[4];
+
+    // a PDE references a 4Mbyte page if CR4.PSE and the PED's page size bit are set
+    if (bit(cr4, 4) && bit(pde_entry, 7)) {
+        uint64_t huge_page_address = (bits(pde_entry, 13, 20) << 32) + (bits(pde_entry, 22, 31) << 22);
+        uint64_t huge_page_offset = bits(addr, 0, 21);
+        return huge_page_address + huge_page_offset;
+    }
+
+    uint64_t pte_address = bits(pde_entry, 12, 31) << 12;
+    uint64_t pte_offset  = bits(addr, 12, 21);
+    uint32_t pte_entry = load_entry_32(pte_address, pte_offset, read_from_snapshot);
+
+    if (unlikely(!pte_entry)) {
+        return INVALID_ADDRESS;
+    }
+
+    // 4Kbyte page translation.
+    uint64_t page_address = bits(pte_entry, 12, 31) << 12;
+    uint64_t page_offset  = bits(addr, 0, 11);
+    return page_address + page_offset;
+}
+
 
 // #define DEBUG_48BIT_WALK
 
