@@ -107,11 +107,22 @@ static inline void dirty_ring_collect(nyx_dirty_ring_t          *self,
                                       uint64_t                   gfn)
 {
     /* sanity check */
-    assert((slot & 0xFFFF0000) == 0);
+    assert(slot < self->kvm_region_slots_num);
 
-    slot_t *kvm_region_slot = &self->kvm_region_slots[slot & 0xFFFF];
+    slot_t *kvm_region_slot = &self->kvm_region_slots[slot];
+
+    if (gfn >= kvm_region_slot->bitmap_size * 8) {
+        assert(gfn < kvm_region_slot->bitmap_size * 8);
+    }
 
     if (test_and_set_bit(gfn, (void *)kvm_region_slot->bitmap) == false) {
+        if ((&kvm_region_slot->stack[kvm_region_slot->stack_ptr] -
+             kvm_region_slot->stack) *
+                sizeof(uint64_t) >=
+            kvm_region_slot->stack_size)
+        {
+            return;
+        }
         kvm_region_slot->stack[kvm_region_slot->stack_ptr] = gfn;
         kvm_region_slot->stack_ptr++;
     }
@@ -209,13 +220,17 @@ nyx_dirty_ring_t *nyx_dirty_ring_init(shadow_memory_t *shadow_memory)
         }
 
         self->kvm_region_slots[i].enabled = (mem->flags & KVM_MEM_READONLY) == 0;
-        self->kvm_region_slots[i].bitmap  = malloc(BITMAP_SIZE(mem->memory_size));
-        self->kvm_region_slots[i].stack = malloc(DIRTY_STACK_SIZE(mem->memory_size));
-
-        memset(self->kvm_region_slots[i].bitmap, 0, BITMAP_SIZE(mem->memory_size));
-        memset(self->kvm_region_slots[i].stack, 0, DIRTY_STACK_SIZE(mem->memory_size));
-
+       
         self->kvm_region_slots[i].bitmap_size = BITMAP_SIZE(mem->memory_size);
+        self->kvm_region_slots[i].bitmap =
+            malloc(self->kvm_region_slots[i].bitmap_size + 7);
+        self->kvm_region_slots[i].stack_size = DIRTY_STACK_SIZE(mem->memory_size);
+        self->kvm_region_slots[i].stack = malloc(self->kvm_region_slots[i].stack_size);
+
+        memset(self->kvm_region_slots[i].bitmap, 0,
+               self->kvm_region_slots[i].bitmap_size);
+        memset(self->kvm_region_slots[i].stack, 0,
+               self->kvm_region_slots[i].stack_size);
 
         self->kvm_region_slots[i].stack_ptr = 0;
 
