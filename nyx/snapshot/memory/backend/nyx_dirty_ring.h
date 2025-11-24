@@ -21,6 +21,7 @@ typedef struct slot_s {
     uint64_t  bitmap_size; // remove me later
     uint64_t *stack;
     uint64_t  stack_ptr;
+    uint64_t  stack_size;
 } slot_t;
 
 typedef struct nyx_dirty_ring_s {
