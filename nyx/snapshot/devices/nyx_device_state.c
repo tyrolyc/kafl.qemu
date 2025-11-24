@@ -374,6 +374,7 @@ nyx_device_state_t *nyx_device_state_init_from_snapshot(const char *snapshot_fol
     }
 
     free(state_buf2);
+    free(file_dump);
 
     if (!pre_snapshot) {
         enable_fast_snapshot_mode();
